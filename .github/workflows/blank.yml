@@ -1,40 +1,240 @@
-# This is a basic workflow to help you get started with Actions
+name: 📥 Download from Google Drive
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "master" branch
-  push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Google Drive 文件链接 (格式：https://drive.google.com/file/d/FILE_ID/view)'
+        required: true
+        default: 'https://drive.google.com/file/d/1-LXEmUfW80BXYQ0tAZx341PzY8u14Z9Q/view?usp=sharing'
+        type: string
+      custom_filename:
+        description: '自定义保存文件名（留空则使用原文件名）'
+        required: false
+        default: ''
+        type: string
+      upload_artifact:
+        description: '是否上传为 Artifact 供下载'
+        required: false
+        default: 'true'
+        type: boolean
+      retention_days:
+        description: 'Artifact 保留天数'
+        required: false
+        default: '7'
+        type: number
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   download:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Python
+      # ─────────────────────────────────────
+      # 1️⃣ 环境准备
+      # ─────────────────────────────────────
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      
-      - name: Install dependencies
-        run: pip install gdown
-      
-      - name: Download file
-        run: gdown --fuzzy "https://drive.google.com/file/d/1-LXEmUfW80BXYQ0tAZx341PzY8u14Z9Q" -O ./my-file.bin
-      
-      - name: Upload artifact (可选)
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade gdown
+          echo "✅ gdown 安装完成"
+
+      # ─────────────────────────────────────
+      # 2️⃣ 解析文件 ID
+      # ─────────────────────────────────────
+      - name: 🔍 Parse File ID
+        id: parse
+        run: |
+          URL="${{ inputs.file_url }}"
+          
+          # 支持多种链接格式
+          FILE_ID=$(echo "$URL" | grep -oP '/file/d/\K[^/]+')
+          
+          if [ -z "$FILE_ID" ]; then
+            # 尝试从 uc?id= 格式提取
+            FILE_ID=$(echo "$URL" | grep -oP 'id=\K[^&]+')
+          fi
+          
+          if [ -z "$FILE_ID" ]; then
+            echo "❌ 无法从链接中提取文件 ID: $URL"
+            echo "支持的格式:"
+            echo "  - https://drive.google.com/file/d/FILE_ID/view"
+            echo "  - https://drive.google.com/uc?id=FILE_ID"
+            exit 1
+          fi
+          
+          echo "file_id=$FILE_ID" >> $GITHUB_OUTPUT
+          echo "✅ 文件 ID: $FILE_ID"
+
+      # ─────────────────────────────────────
+      # 3️⃣ 获取文件名
+      # ─────────────────────────────────────
+      - name: 📛 Get File Name
+        id: filename
+        run: |
+          FILE_ID="${{ steps.parse.outputs.file_id }}"
+          CUSTOM_NAME="${{ inputs.custom_filename }}"
+          
+          # 如果用户指定了自定义文件名，直接使用
+          if [ -n "$CUSTOM_NAME" ]; then
+            echo "📝 使用自定义文件名：$CUSTOM_NAME"
+            echo "file_name=$CUSTOM_NAME" >> $GITHUB_OUTPUT
+            echo "original_name=$CUSTOM_NAME" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 否则尝试从 gdown 输出中获取原文件名
+          echo "🔎 正在查询 Google Drive 文件信息..."
+          
+          TEMP_FILE=$(mktemp)
+          OUTPUT=$(gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}" -O "$TEMP_FILE" 2>&1 || true)
+          
+          # 从输出中提取文件名
+          FILE_NAME=$(echo "$OUTPUT" | grep -oP '(?:Downloading|Saving|File).*?\K[^"\s]+\.[a-zA-Z0-9]+' | head -1)
+          
+          # 如果没提取到，用临时文件名
+          if [ -z "$FILE_NAME" ] && [ -f "$TEMP_FILE" ]; then
+            FILE_NAME=$(basename "$TEMP_FILE")
+          fi
+          
+          # 清理临时文件
+          rm -f "$TEMP_FILE"
+          
+          # 默认文件名
+          if [ -z "$FILE_NAME" ]; then
+            FILE_NAME="gdrive-download-${FILE_ID}"
+            echo "⚠️ 未能获取原文件名，使用默认值：$FILE_NAME"
+          fi
+          
+          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "original_name=$FILE_NAME" >> $GITHUB_OUTPUT
+          echo "✅ 文件名：$FILE_NAME"
+
+      # ─────────────────────────────────────
+      # 4️⃣ 清理文件名（用于 Artifact 名称）
+      # ─────────────────────────────────────
+      - name: 🧹 Sanitize File Name
+        id: safe_name
+        run: |
+          RAW_NAME="${{ steps.filename.outputs.file_name }}"
+          
+          # 替换特殊字符
+          SAFE_NAME=$(echo "$RAW_NAME" | tr -cd '[:alnum:]._-')
+          
+          # 限制长度（Artifact 名称最长 100 字符）
+          SAFE_NAME=${SAFE_NAME:0:80}
+          
+          # 如果为空，用默认值
+          if [ -z "$SAFE_NAME" ]; then
+            SAFE_NAME="gdrive-file"
+          fi
+          
+          echo "safe_name=$SAFE_NAME" >> $GITHUB_OUTPUT
+          echo "✅ 安全文件名：$SAFE_NAME"
+
+      # ─────────────────────────────────────
+      # 5️⃣ 正式下载（带重试）
+      # ─────────────────────────────────────
+      - name: ⬇️ Download from Google Drive
+        run: |
+          FILE_ID="${{ steps.parse.outputs.file_id }}"
+          FILE_NAME="${{ steps.filename.outputs.file_name }}"
+          
+          echo "=========================================="
+          echo "📥 开始下载 Google Drive 文件"
+          echo "=========================================="
+          echo "File ID:   $FILE_ID"
+          echo "File Name: $FILE_NAME"
+          echo "=========================================="
+          
+          # 重试机制（最多 3 次）
+          for i in {1..3}; do
+            echo "🔄 尝试第 $i 次下载..."
+            
+            if gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}" -O "$FILE_NAME"; then
+              echo "✅ 下载成功！"
+              break
+            else
+              echo "⚠️ 第 $i 次尝试失败"
+              if [ $i -eq 3 ]; then
+                echo "❌ 3 次尝试均失败，终止任务"
+                exit 1
+              fi
+              echo "⏳ 3 秒后重试..."
+              sleep 3
+            fi
+          done
+
+      # ─────────────────────────────────────
+      # 6️⃣ 验证文件
+      # ─────────────────────────────────────
+      - name: ✅ Verify Download
+        run: |
+          FILE_NAME="${{ steps.filename.outputs.file_name }}"
+          
+          if [ ! -f "$FILE_NAME" ]; then
+            echo "❌ 文件不存在：$FILE_NAME"
+            exit 1
+          fi
+          
+          FILE_SIZE=$(du -h "$FILE_NAME" | cut -f1)
+          FILE_TYPE=$(file -b "$FILE_NAME" | head -c 100)
+          
+          echo "=========================================="
+          echo "✅ 文件验证通过"
+          echo "=========================================="
+          echo "文件名：$FILE_NAME"
+          echo "大小：$FILE_SIZE"
+          echo "类型：$FILE_TYPE"
+          echo "=========================================="
+          
+          # 输出到 Summary
+          echo "### 📋 下载完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 属性 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📁 文件名 | \`${FILE_NAME}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔗 源链接 | ${{ inputs.file_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📏 大小 | $FILE_SIZE |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📄 类型 | $FILE_TYPE |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🕐 时间 | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔢 Run ID | ${{ github.run_number }} |" >> $GITHUB_STEP_SUMMARY
+
+      # ─────────────────────────────────────
+      # 7️⃣ 上传 Artifact
+      # ─────────────────────────────────────
+      - name: 📤 Upload Artifact
+        if: inputs.upload_artifact == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: downloaded-file
-          path: ./my-file.bin
-          retention-days: 7
+          name: gdrive-${{ steps.safe_name.outputs.safe_name }}-run${{ github.run_number }}
+          path: ${{ steps.filename.outputs.file_name }}
+          retention-days: ${{ inputs.retention_days }}
+          compression-level: 6
+          if-no-files-found: error
 
+      # ─────────────────────────────────────
+      # 8️⃣ 完成提示
+      # ─────────────────────────────────────
+      - name: 🎉 Completion Notice
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "🎉 任务完成！"
+          echo "=========================================="
+          echo ""
+          echo "📦 Artifact 名称：gdrive-${{ steps.safe_name.outputs.safe_name }}-run${{ github.run_number }}"
+          echo "📥 下载位置：Actions → 本次运行 → 页面底部 Artifacts 区域"
+          echo "⏱️ 保留期限：${{ inputs.retention_days }} 天"
+          echo ""
+          echo "🔗 直接访问:"
+          echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "=========================================="
