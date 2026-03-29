@@ -48,7 +48,6 @@ jobs:
           fi
 
       - name: 📤 Upload Artifact
-        if: inputs.upload_artifact == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: motion-npz-${{ github.run_number }}
