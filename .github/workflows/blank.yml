@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       file_url:
-        description: 'Google Drive 文件链接 (格式：https://drive.google.com/file/d/FILE_ID/view)'
+        description: 'Google Drive 文件链接 (格式：https://drive.google.com/file/d/FILE_ID)'
         required: true
-        default: 'https://drive.google.com/file/d/1-LXEmUfW80BXYQ0tAZx341PzY8u14Z9Q/view?usp=sharing'
+        default: 'https://drive.google.com/file/d/1-LXEmUfW80BXYQ0tAZx341PzY8u14Z9Q'
         type: string
       custom_filename:
         description: '自定义保存文件名（留空则使用原文件名）'
