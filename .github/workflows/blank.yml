@@ -35,7 +35,7 @@ jobs:
           echo "📥 下载文件：$FILE_NAME"
           echo "🔗 File ID: $FILE_ID"
           
-          gdown --fuzzy "https://drive.google.com/file/d/${FILE_ID}" -O "$FILE_NAME"
+          gdown "${FILE_ID}" -O "$FILE_NAME"
           
           # 验证
           if [ -f "$FILE_NAME" ]; then
